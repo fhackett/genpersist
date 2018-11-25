@@ -1,4 +1,5 @@
-from collections import namedtuple
+import collections as _collections
+import functools as _functools
 
 class Trie:
     def __init__(self):
@@ -55,67 +56,77 @@ def _make_fresh_version():
     __version += 1
     return v
 
-_NodeRef = namedtuple('_NodeRef', ['prefix', 'ref'])
+_NodeRef = _collections.namedtuple('_NodeRef', ['prefix', 'ref', 'cls'])
 
-class _Node:
-    pass
+class Node:
+    # We have this here so we don't impede whatever __init__ the class we took over has going on
+    def __new__(cls, *args, **kwargs):
+        instance = super().__new__(cls)
 
-class NodeView:
-    def __init__(self, node, version_str):
-        super().__setattr__('__node', node)
-        super().__setattr__('__version_str', version_str)
-
-    def __getattr__(self, name):
-        node = super().__getattribute__('__node')
-        version_str = super().__getattribute__('__version_str')
-        trie = node[name]
-        prefix, attr = trie.longest_prefix_item(version_str)
-        if isinstance(attr, _NodeRef):
-            new_prefix, other_node = attr
-            return NodeView(other_node, new_prefix+version_str[len(prefix):])
+        if '__Node__version_string' in kwargs:
+            version_string = kwargs['__Node__version_string']
         else:
-            return attr
+            version_string = (_make_fresh_version(),)
+        node = kwargs.get('__Node__node', {})
 
-    def __setattr__(self, name, attr):
-        node = super().__getattribute__('__node')
-        version_str = super().__getattribute__('__version_str')
-        try:
-            trie = getattr(node, name)
-        except AttributeError:
-            trie = Trie()
-            setattr(node, name, trie)
-        assert isinstance(trie, Trie)
-        version_str += _make_fresh_version(),
-        if isinstance(attr, NodeView):
-            other_node = super(NodeView, attr).__getattribute__('__node')
-            other_version_str = super(NodeView, attr).__getattribute__('__version_str')
-            trie[version_str] = _NodeRef(other_version_str, other_node)
+        super(Node, instance).__setattr__('__Node__version_string', version_string)
+        super(Node, instance).__setattr__('__Node__node', node)
+        
+        return instance
+    
+    def __init_subclass__(cls, *args, **kwargs):
+        super().__init_subclass__(*args, **kwargs)
+        # this is the best way I could find to prevent __init__ from running when creating
+        # a new handle to an existing node
+        if hasattr(cls, '__init__'):
+            real_init = getattr(cls, '__init__')
+            @_functools.wraps(real_init)
+            def fake_init(self, *args, **kwargs):
+                # skip __init__ entirely if we're just changing version string
+                if '__Node__version_string' in kwargs or '__Node__node' in kwargs:
+                    pass
+                else:
+                    real_init(self, *args, **kwargs)
+            setattr(cls, '__init__', fake_init)
+    
+    def __getattribute__(self, name):
+        node = super().__getattribute__('__Node__node')
+        version_string = super().__getattribute__('__Node__version_string')
+
+        if name in node:
+            prefix, value = node[name].longest_prefix_item(version_string)
+            print('got', prefix, value, version_string, name)
+            if prefix is None:
+                raise AttributeError(name)
+            if isinstance(value, _NodeRef):
+                ref_pfx, val, cls= value
+                return cls(
+                    __Node__version_string=ref_pfx+prefix[len(ref_pfx)-1:],
+                    __Node__node=val)
+            else:
+                return value
         else:
-            trie[version_str] = attr
-        super().__setattr__('__version_str', version_str)
+            raise AttributeError(name)
 
     def __repr__(self):
-        node = super().__getattribute__('__node')
-        version_str = super().__getattribute__('__version_str')
-        return f'NodeView(version_str={version_str}, data={node})'
+        node = super().__getattribute__('__Node__node')
+        values = { key : getattr(self, key) for key in node.keys() }
+        return f'Node({values})'
 
-class NodeMeta(type):
-    def __new__(cls, name, bases, attrs):
-        print(cls, name, bases, attrs)
-        if '__init__' in attrs:
-            old_init = attrs['__init__']
-        else:
-            old_init = lambda *args, **kwargs: None
-        def __init__(self, *args, **kwargs):
-            print('real_init')
-            NodeView.__init__(self, {}, ())
-            old_init(self, *args, **kwargs)
-        attrs['__init__'] = __init__
-        print(attrs)
-        #attrs['__new_view'] = 
+    def __setattr__(self, name, value):
+        node = super().__getattribute__('__Node__node')
+        version_string = super().__getattribute__('__Node__version_string')
 
-        return type(name+'View', (NodeView, *bases), attrs)
+        if isinstance(value, Node):
+            value_node = object.__getattribute__(value, '__Node__node')
+            value_version_string = object.__getattribute__(value, '__Node__version_string')
+            value_cls = object.__getattribute__(value, '__class__')
+            value = _NodeRef(value_version_string, value_node, value_cls)
 
-class Node(metaclass=NodeMeta):
-    pass
+        version_string = (*version_string, _make_fresh_version())
+        if name not in node:
+            node[name] = Trie()
+        node[name][version_string] = value
+
+        super().__setattr__('__Node__version_string', version_string)
 

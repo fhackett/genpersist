@@ -28,6 +28,11 @@ def test__basic():
     assert t.longest_prefix_item('a') == ('', 3)
     assert t.longest_prefix_item('') == ('', 3)
 
+def test__trie_scenario1():
+    t = Trie()
+
+    t[(0,)] = 1
+
 def test__basic_confluence():
     class C(Node):
         print('C')
@@ -48,11 +53,13 @@ def test__basic_confluence():
 
     c.b = d
 
+    print(c)
+
     assert c.a == 1
     assert c.b.a == 1
     assert c.b.b == None
 
-    a.b.a = 2
+    c.b.a = 2
 
     assert c.a == 1
     assert c.b.a == 2
