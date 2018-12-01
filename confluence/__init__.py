@@ -2,6 +2,7 @@ import collections as _collections
 import functools as _functools
 import contextlib as _contextlib
 import inspect as _inspect
+import contextvars as _contextvars
 
 class Trie:
     def __init__(self):
@@ -60,69 +61,55 @@ def _make_fresh_version():
 
 _NodeRef = _collections.namedtuple('_NodeRef', ['prefix', 'ref', 'cls'])
 
-class _VersionHandle:
-    def __init__(self, version=None):
-        self.version = version
-        self.version_string = None
+def _get_version_string(node):
+    return super(Node, node).__getattribute__('__Node__version_string')
 
-def start_operation(node):
-    """Idempotently starts an operation, such that all assignments between this function
-    call will fall under an operation. If there is not already an operation under way,
-    we create a new version number here and use that.
-    
-    Returns either a version handle or None depending on whether we were the ones who
-    started the operation or not."""
-    version_handle = super(Node, node).__getattribute__('__Node__version_handle')
-    if version_handle.version is None:
-        version_handle = _VersionHandle(_make_fresh_version())
-        super(Node, node).__setattr__('__Node__version_handle', version_handle)
-        return version_handle
-    else:
-        return None
+def _get_operation_handle(node):
+    return super(Node, node).__getattribute__('__Node__operation_handle')
 
-def start_cooperation(version_handle, node):
-    """Ensures that node sees version_handle as its current operation, replacing any existing
-    operation underway. Returns the operation replaces to it can be put back when this operation
-    is done."""
-    old_version_handle = super(Node, node).__getattribute__('__Node__version_handle')
-    super(Node, node).__setattr__('__Node__version_handle', version_handle)
-    return old_version_handle
+def _get_data(node):
+    return super(Node, node).__getattribute__('__Node__data')
 
-def end_cooperation(old_version_handle, node):
-    """Reassigns the old version handle to node's version handle, ending the current operation's
-    influence on that node."""
-    super(Node, node).__setattr__('__Node__version_handle', old_version_handle)
-
-def end_operation(version_handle):
-    """Ends the operation indicated by version_handle. If version_handle is None then
-    whoever received version_handle from start_operation didn't actually start the
-    operation so shouldn't end it either. If version_handle is not None then this is our
-    operation and we can safely end it."""
-    if version_handle is not None:
-        version_handle.version = None
-
-@_contextlib.contextmanager
-def operation(node, *others):
-    """Context manager for an operation, see start_operation and end_operation"""
-    version_handle = start_operation(node)
-    cooperation_version_handle = super(Node, node).__getattribute__('__Node__version_handle')
-    old_version_handles = [start_cooperation(cooperation_version_handle, n) for n in others]
-    try:
-        yield node
-    finally:
-        end_operation(version_handle)
-        for old_handle, other in zip(old_version_handles, others):
-            end_cooperation(old_handle, other)
-
-def refdup(node):
-    version_handle = super(Node, node).__getattribute__('__Node__version_handle')
-    node_v = super(Node, node).__getattribute__('__Node__node')
-    version_string = super(Node, node).__getattribute__('__Node__version_string')
+def _new_node(node, *, version_string):
     cls = super(Node, node).__getattribute__('__class__')
     return cls(
-        __Node__version_handle=version_handle,
-        __Node__version_string=version_string,
-        __Node__node=node_v)
+        __Node__data=_get_data(node),
+        __Node__version_string=version_string)
+
+_operation_version = _contextvars.ContextVar('operation_version', default=None)
+
+@_contextlib.contextmanager
+def operation(*nodes):
+    """Context manager for an operation, see start_operation and end_operation"""
+    current_version = _operation_version.get()
+    if current_version is None:
+        current_version = _make_fresh_version()
+        reset_token = _operation_version.set(current_version)
+    else:
+        reset_token = None
+    try:
+        new_nodes = tuple(
+            _new_node(node, version_string=(*_get_version_string(node), current_version))
+            for node in nodes)
+        if len(new_nodes) == 1:
+            yield new_nodes[0]
+        else:
+            yield new_nodes
+    finally:
+        if reset_token is not None:
+            _operation_version.reset(reset_token)
+
+def snapshot(*nodes):
+    """Returns a version of the given nodes with one element added to their version string.
+    This is almost a no-op, except that if you make a node point to a snapshot of itself
+    it will not actually form a circular reference."""
+    version = _make_fresh_version()
+    snapshots = tuple(_new_node(node, version_string=(*_get_version_string(node), version))
+        for node in nodes)
+    if len(snapshots) == 1:
+        return snapshots[0]
+    else:
+        return snapshots
 
 class Node:
     # We have this here so we don't impede whatever __init__ the class we took over has going on
@@ -132,18 +119,20 @@ class Node:
         if '__Node__version_string' in kwargs:
             version_string = kwargs['__Node__version_string']
         else:
-            version_string = (_make_fresh_version(),)
-        node = kwargs.get('__Node__node', {})
-        version_handle = kwargs.get('__Node__version_handle', _VersionHandle())
+            v = _operation_version.get()
+            if v is None:
+                raise Exception("TODO")
+            version_string = (v,)
+        data = kwargs.get('__Node__data', {})
 
         super(Node, instance).__setattr__('__Node__version_string', version_string)
-        super(Node, instance).__setattr__('__Node__node', node)
-        super(Node, instance).__setattr__('__Node__version_handle', version_handle)
+        super(Node, instance).__setattr__('__Node__data', data)
         
         return instance
     
     def __init_subclass__(cls, *args, **kwargs):
         super().__init_subclass__(*args, **kwargs)
+
         # this is the best way I could find to prevent __init__ from running when creating
         # a new handle to an existing node
         if hasattr(cls, '__init__'):
@@ -151,87 +140,51 @@ class Node:
             @_functools.wraps(real_init)
             def fake_init(self, *args, **kwargs):
                 # skip __init__ entirely if we're just changing version string
-                if '__Node__version_string' in kwargs or '__Node__node' in kwargs:
+                if '__Node__version_string' in kwargs or '__Node__data' in kwargs:
                     pass
                 else:
                     real_init(self, *args, **kwargs)
             setattr(cls, '__init__', fake_init)
-        
-        # "convert" all methods to start an operation context, so each one is perceived to
-        # operate at one atomic version
-        for field_name, field_value in cls.__dict__.items():
-            if callable(field_value):
-                # extra nested function to avoid only getting the last field_value in proxy's
-                # closure
-                def _closure(field_value=field_value):
-                    @_functools.wraps(field_value)
-                    def proxy(self, *args, **kwargs):
-                        # ensure that the method "sees" arguments to be part of the same operation
-                        cooperation_set = (n
-                            for n in (*args, *kwargs.values())
-                            if isinstance(n, Node))
-                        with operation(self, *cooperation_set) as proxy:
-                            return field_value(proxy, *args, **kwargs)
-                    return proxy
-                setattr(cls, field_name, _closure())
     
     def __getattribute__(self, name):
-        node = super().__getattribute__('__Node__node')
+        data = super().__getattribute__('__Node__data')
         version_string = super().__getattribute__('__Node__version_string')
-        version_handle = super().__getattribute__('__Node__version_handle')
 
-        # if none of our attributes change but one of the fields' attributes change, we
-        # won't see it if we don't update our version accordingly
-        if version_handle.version is not None and version_string[-1] != version_handle.version:
-            version_string = (*version_string, version_handle.version)
-            super().__setattr__('__Node__version_string', version_string)
-
-        if name in node:
-            prefix, value = node[name].longest_prefix_item(version_string)
+        if name in data:
+            prefix, value = data[name].longest_prefix_item(version_string)
             if prefix is None:
                 raise AttributeError(name)
             if isinstance(value, _NodeRef):
                 ref_pfx, val, cls= value
                 return cls(
                     __Node__version_string=ref_pfx+version_string[len(prefix)-1:],
-                    __Node__node=val,
-                    # ensure that the referenced node also sees the current version handle
-                    # so a.b.c.d == x increments b's version of c like you would expect
-                    __Node__version_handle=version_handle)
+                    __Node__data=val)
             else:
                 return value
-        elif name.startswith('__') and name.endswith('__'):
-            return super().__getattribute__(name)
         else:
-            raise AttributeError(name)
+            return super().__getattribute__(name)
 
     def __repr__(self):
-        node = super().__getattribute__('__Node__node')
+        data = super().__getattribute__('__Node__data')
         version_string = super().__getattribute__('__Node__version_string')
-        values = { key : getattr(self, key) for key in node.keys() }
+        values = { key : getattr(self, key) for key in data.keys() }
         return f'Node(version={version_string},values={values})'
 
     def __setattr__(self, name, value):
-        node = super().__getattribute__('__Node__node')
+        data = super().__getattribute__('__Node__data')
         version_string = super().__getattribute__('__Node__version_string')
-        version_handle = super().__getattribute__('__Node__version_handle')
 
         if isinstance(value, Node):
-            value_node = object.__getattribute__(value, '__Node__node')
-            value_version_string = object.__getattribute__(value, '__Node__version_string')
-            value_cls = object.__getattribute__(value, '__class__')
-            value = _NodeRef(value_version_string, value_node, value_cls)
+            value_data = _get_data(value)
+            value_version_string = _get_version_string(value)
+            value_cls = super(Node, value).__getattribute__('__class__')
+            value = _NodeRef(value_version_string, value_data, value_cls)
 
-        if version_handle.version is None:
-            version_string = (*version_string, _make_fresh_version())
-        elif version_string[-1] != version_handle.version:
-            version_string = (*version_string, version_handle.version)
-        # if the latest version == the one in the version handle, don't change anything
-        # since reassignments are ok within an operation
+        # only allow setting properties during 1) an operation 2) related to us
+        if version_string[-1] != _operation_version.get():
+            raise Exception("TODO")
 
-        if name not in node:
-            node[name] = Trie()
-        node[name][version_string] = value
-
-        super().__setattr__('__Node__version_string', version_string)
+        if name not in data:
+            data[name] = Trie()
+        data[name][version_string] = value
 
