@@ -1,7 +1,7 @@
 import setuptools
 
 setuptools.setup(
-    name='confluence',
+    name='genpersist',
     packages=setuptools.find_packages(),
 )
 

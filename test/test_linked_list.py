@@ -1,5 +1,5 @@
 import pytest
-from confluence import Node, operation, snapshot
+from genpersist import Node, operation, snapshot
 
 class LinkedList(Node):
     class ListNode(Node):

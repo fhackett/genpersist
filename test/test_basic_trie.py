@@ -1,4 +1,4 @@
-from confluence import Trie
+from genpersist import Trie
 
 def test__trie_basic():
     t = Trie()

@@ -1,4 +1,4 @@
-from confluence import Node, operation, snapshot
+from genpersist import Node, operation, snapshot
 import pytest
 
 class C(Node):
