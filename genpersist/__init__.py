@@ -72,11 +72,24 @@ def _get_data(node):
 
 def _new_node(node, *, version_string):
     cls = super(Node, node).__getattribute__('__class__')
-    return cls(
+    return cls.__new__(cls,
         __Node__data=_get_data(node),
         __Node__version_string=version_string)
 
 _operation_version = _contextvars.ContextVar('operation_version', default=None)
+
+class ConfluenceError(Exception):
+    '''A base class for errors pertaining to confluent versioning.'''
+    pass
+
+class IncorrectOperationError(ConfluenceError):
+    '''This means that there was an attempt to either:
+    - instantiate a Node subclass outside of an operation context
+    - mutate a Node subclass's instance in the "wrong" operation context,
+    that is, either the node's version does not reflect the current operation
+    or there is no current operation
+    '''
+    pass
 
 @_contextlib.contextmanager
 def operation(*nodes):
@@ -121,7 +134,7 @@ class Node:
         else:
             v = _operation_version.get()
             if v is None:
-                raise Exception("TODO")
+                raise IncorrectOperationError()
             version_string = (v,)
         data = kwargs.get('__Node__data', {})
 
@@ -130,22 +143,6 @@ class Node:
         
         return instance
     
-    def __init_subclass__(cls, *args, **kwargs):
-        super().__init_subclass__(*args, **kwargs)
-
-        # this is the best way I could find to prevent __init__ from running when creating
-        # a new handle to an existing node
-        if hasattr(cls, '__init__'):
-            real_init = getattr(cls, '__init__')
-            @_functools.wraps(real_init)
-            def fake_init(self, *args, **kwargs):
-                # skip __init__ entirely if we're just changing version string
-                if '__Node__version_string' in kwargs or '__Node__data' in kwargs:
-                    pass
-                else:
-                    real_init(self, *args, **kwargs)
-            setattr(cls, '__init__', fake_init)
-    
     def __getattribute__(self, name):
         data = super().__getattribute__('__Node__data')
         version_string = super().__getattribute__('__Node__version_string')
@@ -153,10 +150,10 @@ class Node:
         if name in data:
             prefix, value = data[name].longest_prefix_item(version_string)
             if prefix is None:
-                raise AttributeError(name)
+                raise super().__getattribute__(name)
             if isinstance(value, _NodeRef):
                 ref_pfx, val, cls= value
-                return cls(
+                return cls.__new__(cls,
                     __Node__version_string=ref_pfx+version_string[len(prefix)-1:],
                     __Node__data=val)
             else:
@@ -182,7 +179,7 @@ class Node:
 
         # only allow setting properties during 1) an operation 2) related to us
         if version_string[-1] != _operation_version.get():
-            raise Exception("TODO")
+            raise IncorrectOperationError()
 
         if name not in data:
             data[name] = Trie()
