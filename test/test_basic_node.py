@@ -1,4 +1,4 @@
-from genpersist import Node, operation, snapshot
+from genpersist import Node, operation
 import pytest
 
 class C(Node):
@@ -67,20 +67,6 @@ def test__self_reference(c):
 
     with operation(c) as c:
         c.b = c0
-        c.a = 6
-
-    assert c.a == 6
-    assert c.b.a == 6
-    assert c.b.b.a == 6
-
-    assert c0.a == 1
-    assert c0.b is None
-
-def test__self_reference_snapshot(c):
-    c0 = c
-
-    with operation(c) as c:
-        c.b = snapshot(c0)
         c.a = 6
 
     assert c.a == 6

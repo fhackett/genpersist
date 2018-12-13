@@ -1,5 +1,5 @@
 import pytest
-from genpersist import Node, operation, snapshot
+from genpersist import Node, operation
 
 class LinkedList(Node):
     class ListNode(Node):
@@ -55,23 +55,18 @@ class LinkedList(Node):
             curr = curr.next
 
 def test__past_self_append():
-    # node: the use of snapshot() here is required in order to link
-    # with a previous version that shared its entire history with you
-    # this is required for consistency, since over time links to past
-    # but congruent versions are automatically updated to reflect subsequent
-    # changes. if you don't want that, use snapshot()
     with operation():
         lst = LinkedList([1])
     
     assert list(lst) == [1]
 
     with operation(lst) as lst2:
-        lst2.append(snapshot(lst))
+        lst2.append(lst)
 
     assert list(lst2) == [1,1]
 
     with operation(lst2) as lst3:
-        lst3.append(snapshot(lst2))
+        lst3.append(lst2)
 
     assert list(lst3) == [1,1,1,1]
 
