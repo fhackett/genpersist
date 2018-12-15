@@ -88,6 +88,8 @@ _operation_version = _contextvars.ContextVar('operation_version', default=None)
 _operation_finalisers = _contextvars.ContextVar('operation_finalisers')
 _operation_tmp_backing_cache = _contextvars.ContextVar('operation_tmp_backing_cache')
 
+_ImpureValue = _collections.namedtuple('_ImpureValue', ['value'])
+
 class ConfluenceError(Exception):
     '''A base class for errors pertaining to confluent versioning.'''
     pass
@@ -140,11 +142,26 @@ def operation(*nodes):
                 _operation_finalisers.reset(reset_token_f)
                 _operation_tmp_backing_cache.reset(reset_token_c)
 
-def _wrap(obj, assignee_version_string, tp_cache={}):
+_tp_cache = {}
+
+def register_wrapper(tp):
+    '''A class decorator that allows users to customise how certain classes are
+    treated by genpersist. There is a fairly general catch-all conversion process
+    that will work for most "normal" classes, but if you're doing something unusual
+    involving builtins this may be for you.'''
+    assert tp not in _tp_cache
+    def register(cls):
+        _tp_cache[tp] = cls
+    return register
+
+def _wrap(obj, assignee_version_string):
     current_version = _operation_version.get()
     if current_version is None:
         raise IncorrectOperationError()
     
+    if isinstance(obj, _ImpureValue):
+        return obj
+
     if isinstance(obj, Node):
         obj_version_string = _get_version_string(obj)
         print(obj, obj_version_string, assignee_version_string)
@@ -169,11 +186,11 @@ def _wrap(obj, assignee_version_string, tp_cache={}):
     if tp in (type(None), str, bytes, int, float, complex):
         return obj
 
-    if tp not in tp_cache:
-        wrap_tp = type(tp.__name__ + 'Node', (tp, Node), {})
-        tp_cache[tp] = wrap_tp
+    if tp not in _tp_cache:
+        wrap_tp = type(tp.__name__ + 'Node', (tp, Node), {'__slots__': []})
+        _tp_cache[tp] = wrap_tp
     else:
-        wrap_tp = tp_cache[tp]
+        wrap_tp = _tp_cache[tp]
 
     wrapped = wrap_tp._wrap(obj)
     tmp_backing_cache[id(obj)] = wrapped
@@ -181,6 +198,14 @@ def _wrap(obj, assignee_version_string, tp_cache={}):
     return wrapped
 
 class Node:
+    # support classes that use __slots__ (if we define it but they don't it's meaningless,
+    # if we both defined it everything works the way the other class expected)
+    __slots__ = [
+        '__Node__version_string',
+        '__Node__data',
+        '__Node__tmp_backing',
+    ]
+
     # We have this here so we don't impede whatever __init__ the class we took over has going on
     def __new__(cls, *args, **kwargs):
         instance = super().__new__(cls)
@@ -199,7 +224,6 @@ class Node:
         super(Node, instance).__setattr__('__Node__version_string', version_string)
         super(Node, instance).__setattr__('__Node__data', data)
         super(Node, instance).__setattr__('__Node__tmp_backing', tmp_backing)
-        super(Node, instance).__setattr__('__Node__mutable', mutable)
         
         return instance
 
@@ -216,11 +240,19 @@ class Node:
         tmp_backing = super().__getattribute__('__Node__tmp_backing')
         assert tmp_backing is not None
         super().__setattr__('__Node__tmp_backing', None)
-        super().__setattr__('__Node__mutable', False)
         
         for k, v in tmp_backing.__dict__.items():
             setattr(self, k, v)
     
+    def _adapt_reference_version(self, value):
+        if isinstance(value, Node):
+            version_string = _get_version_string(self)
+            ref_pfx = _get_version_string(value)
+            calculated_version = ref_pfx+tuple(v for v in version_string if v > ref_pfx[-1])
+            if ref_pfx != calculated_version:
+                return _new_node(value, version_string=calculated_version)
+        return value
+
     def __getattribute__(self, name):
         data = super().__getattribute__('__Node__data')
         version_string = super().__getattribute__('__Node__version_string')
@@ -236,18 +268,7 @@ class Node:
             prefix, value = data[name].longest_prefix_item(version_string)
             if prefix is None:
                 raise super().__getattribute__(name)
-            if isinstance(value, Node):
-                ref_pfx = _get_version_string(value)
-                calculated_version = ref_pfx+tuple(v for v in version_string if v > ref_pfx[-1])
-                print('VER', 'version=', version_string, 'prefix=', prefix, 'ref_pfx=', ref_pfx, 'calc=', calculated_version)
-                return _new_node(value, version_string=calculated_version)
-                if ref_pfx == version_string:
-                    return value
-                else:
-                    calculated_version = ref_pfx+version_string[len(prefix):]
-                    return _new_node(value, version_string=calculated_version)
-            else:
-                return value
+            return self._adapt_reference_version(value)
         else:
             return super().__getattribute__(name)
 
@@ -265,15 +286,6 @@ class Node:
         if tmp_backing is not None:
             return setattr(tmp_backing, name, value)
 
-        # if isinstance(value, Node):
-        #     value_data = _get_data(value)
-        #     value_version_string = _get_version_string(value)
-        #     value_cls = super(Node, value).__getattribute__('__class__')
-        #     value = _NodeRef(value_version_string, value_data, value_cls)
-        # elif not isinstance(value, (
-        #         int, float, complex, bool, str, bytes, tuple, frozenset, range, type(None))):
-        #     raise MutableValueError()
-
         # only allow setting properties during 1) an operation 2) related to us
         if version_string[-1] != _operation_version.get():
             raise IncorrectOperationError()
@@ -281,4 +293,107 @@ class Node:
         if name not in data:
             data[name] = Trie()
         data[name][version_string] = _wrap(value, version_string)
+
+@register_wrapper(tuple)
+class TupleNode(Node):
+    __slots__ = ['_tuple']
+
+    def __init__(self, src=()):
+        version_string = _get_version_string(self)
+        self._tuple = _ImpureValue(tuple(_wrap(v, version_string) for v in src))
+
+    def _wrap(self, obj):
+        # since tuples themselves are immutable (but their members might not be)
+        # we can just convert the tuple on the spot, unlike the catch-all mutable class
+        # conversion you'll see for plain Node objects
+        wrapped = TupleNode.__new__()
+        # as a tricky edge case however, you could feed this a tuple that indirectly contains
+        # a cyclic reference. We cache our converted object _before_ trying to recursively
+        # convert the members in order to catch and resolve that cycle instead of infinitely
+        # recursing.
+        _operation_tmp_backing_cache.get()[id(obj)] = wrapped
+        wrapped.__init__(obj)
+        return wrapped
+
+    def __len__(self):
+        return len(self._tuple.value)
+
+    def __repr__(self):
+        return f'({", ".join(repr(e) for e in self)})'
+
+    def __hash__(self):
+        return hash(tuple(self))
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self)))
+
+    def __eq__(self, other):
+        if not isinstance(other, (tuple, TupleNode)):
+            return False
+
+        return len(self) == len(other) and all(a == b for a, b in zip(self, other))
+
+    def _comp(self, other, *, lt_result, gt_result, when_all_eq):
+        if not isinstance(other, (tuple, TupleNode)):
+            return NotImplemented
+
+        for a, b in zip(self, other):
+            if a < b: return lt_result
+            elif a > b: return gt_result
+        # if we got here everything we zipped was equal
+        return when_all_eq(len(self), len(other))
+
+    def __lt__(self, other):
+        return self._comp(other,
+            lt_result=True,
+            gt_result=False,
+            when_all_eq=lambda s, o: s < o)
+
+    def __le__(self, other):
+        return self._comp(other,
+            lt_result=True,
+            gt_result=False,
+            when_all_eq=lambda s, o: s <= o)
+
+    def __gt__(self, other):
+        return self._comp(other,
+            lt_result=False,
+            gt_result=True,
+            when_all_eq=lambda s, o: s > o)
+
+    def __ge__(self, other):
+        return self._comp(other,
+            lt_result=False,
+            gt_result=True,
+            when_all_eq=lambda s, o: s >= o)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return TupleNode(self[i] in range(index.start, index.stop, index.step))
+        return self._adapt_reference_version(self._tuple.value[index])
+
+    def __add__(self, other):
+        if not isinstance(other, (tuple, TupleNode)):
+            return NotImplemented
+
+        return TupleNode((*self, *other))
+
+    def __radd__(self, other):
+        if not isinstance(other, (tuple, TupleNode)):
+            return NotImplemented
+
+        return TupleNode((*other, *self))
+
+    def __mul__(self, times):
+        try:
+            r = range(times)
+        except TypeError:
+            # presumably, times was not an appropriate argument for range
+            return NotImplemented
+        return TupleNode(v for v in self._tuple.value for t in r)
+
+    def __rmul__(self, times):
+        return self.__mul__(times)
+    
+    # __contains__ leave it to the default implementation for now
 

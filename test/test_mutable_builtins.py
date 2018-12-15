@@ -1,3 +1,4 @@
+import pytest
 from genpersist import Node, operation
 
 class C(Node):
@@ -25,6 +26,7 @@ def test__converting_assignment():
     assert (c1.d.x, c1.d.y) == (3, 4)
     assert (c2.d.x, c2.d.y) == (5, 4)
 
+@pytest.mark.xfail
 def test__version_list():
     with operation():
         c1 = C()
@@ -36,6 +38,7 @@ def test__version_list():
     assert c1.lst == []
     assert c2.lst == [5]
 
+@pytest.mark.xfail
 def test__list_element_is_node():
     with operation():
         c1 = C()
@@ -55,6 +58,7 @@ def test__list_element_is_node():
     assert (c22.lst[0].lst, c22.lst[1]) == ([], 5)
     assert c3.lst[0].lst == [2]
 
+@pytest.mark.xfail
 def test__list_modify_after_assign():
     with operation():
         c1 = C()
