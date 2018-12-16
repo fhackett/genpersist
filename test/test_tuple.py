@@ -40,3 +40,15 @@ def test__assign_tuple_with_elements():
     assert d2.x == (5,6)
     assert tuple(e.x for e in c2.x) == ((1,2), (3,4), (5,6))
 
+class D: pass
+
+def test__self_referential():
+    with operation():
+        d = D()
+        d.x = (1, d)
+        c = D()
+        c.d = d
+
+    # it's a cycle, did we crash?
+    assert c.d.x[0] == 1 and c.d.x[1].x[0] == 1
+
