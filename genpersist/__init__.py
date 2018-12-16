@@ -152,6 +152,7 @@ def register_wrapper(tp):
     assert tp not in _tp_cache
     def register(cls):
         _tp_cache[tp] = cls
+        return cls
     return register
 
 def _wrap(obj, assignee_version_string):
@@ -296,17 +297,17 @@ class Node:
 
 @register_wrapper(tuple)
 class TupleNode(Node):
-    __slots__ = ['_tuple']
 
     def __init__(self, src=()):
         version_string = _get_version_string(self)
         self._tuple = _ImpureValue(tuple(_wrap(v, version_string) for v in src))
 
-    def _wrap(self, obj):
+    @classmethod
+    def _wrap(cls, obj):
         # since tuples themselves are immutable (but their members might not be)
         # we can just convert the tuple on the spot, unlike the catch-all mutable class
         # conversion you'll see for plain Node objects
-        wrapped = TupleNode.__new__()
+        wrapped = TupleNode.__new__(cls)
         # as a tricky edge case however, you could feed this a tuple that indirectly contains
         # a cyclic reference. We cache our converted object _before_ trying to recursively
         # convert the members in order to catch and resolve that cycle instead of infinitely
@@ -396,4 +397,15 @@ class TupleNode(Node):
         return self.__mul__(times)
     
     # __contains__ leave it to the default implementation for now
+
+    def count(self, elem):
+        return sum(1 if e == elem else 0 for e in self)
+
+    def index(self, x, i=0, j=None):
+        if j is None:
+            j = len(self)
+        for p in range(i, j):
+            if self[p] == x:
+                return p
+        raise ValueError(x)
 
