@@ -5,6 +5,7 @@ import inspect as _inspect
 import contextvars as _contextvars
 
 class Trie:
+    __slots__ = ('_children',)
     def __init__(self):
         self._children = {}
 
@@ -69,23 +70,23 @@ def _make_fresh_version():
     return (v, 0)
 
 def _get_version_string(node):
-    return super(Node, node).__getattribute__('__Node__version_string')
+    return super(Node, node).__getattribute__('_Node__version_string')
 
 def _get_data(node):
-    return super(Node, node).__getattribute__('__Node__data')
+    return super(Node, node).__getattribute__('_Node__data')
 
 def _get_tmp_backing(node):
-    return super(Node, node).__getattribute__('__Node__tmp_backing')
+    return super(Node, node).__getattribute__('_Node__tmp_backing')
 
 def _remove_tmp_backing(node):
-    super(Node, node).__setattr__('__Node__tmp_backing', None)
+    super(Node, node).__setattr__('_Node__tmp_backing', None)
 
 def _new_node(node, *, version_string):
     cls = super(Node, node).__getattribute__('__class__')
     return cls.__new__(cls,
-        __Node__data=_get_data(node),
-        __Node__version_string=version_string,
-        __Node__tmp_backing=_get_tmp_backing(node))
+        _Node__data=_get_data(node),
+        _Node__version_string=version_string,
+        _Node__tmp_backing=_get_tmp_backing(node))
 
 _operation_version = _contextvars.ContextVar('operation_version', default=None)
 _operation_finalisers = _contextvars.ContextVar('operation_finalisers')
@@ -162,7 +163,7 @@ def register_wrapper(tp):
 def _clean_kwargs(kwargs):
     return {k : v
             for k, v in kwargs.items()
-            if k not in ('__Node__version_string', '__Node__data', '__Node__tmp_backing')}
+            if k not in ('_Node__version_string', '_Node__data', '_Node__tmp_backing')}
 
 def _wrap(obj, assignee_version_string):
     current_version = _operation_version.get()
@@ -216,11 +217,11 @@ def _wrap(obj, assignee_version_string):
 class Node:
     # support classes that use __slots__ (if we define it but they don't it's meaningless,
     # if we both defined it everything works the way the other class expected)
-    __slots__ = [
-        '__Node__version_string',
-        '__Node__data',
-        '__Node__tmp_backing',
-    ]
+    __slots__ = (
+        '_Node__version_string',
+        '_Node__data',
+        '_Node__tmp_backing',
+    )
 
     # We have this here so we don't impede whatever __init__ the class we took over has going on
     def __new__(cls, *args, **kwargs):
@@ -230,34 +231,34 @@ class Node:
         if skw is not None:
             kwargs = skw
 
-        if '__Node__version_string' in kwargs:
-            version_string = kwargs['__Node__version_string']
+        if '_Node__version_string' in kwargs:
+            version_string = kwargs['_Node__version_string']
         else:
             v = _operation_version.get()
             if v is None:
                 raise IncorrectOperationError()
             version_string = (v,)
-        data = kwargs.get('__Node__data', {})
-        tmp_backing = kwargs.get('__Node__tmp_backing', None)
+        data = kwargs.get('_Node__data', {})
+        tmp_backing = kwargs.get('_Node__tmp_backing', None)
 
-        super(Node, instance).__setattr__('__Node__version_string', version_string)
-        super(Node, instance).__setattr__('__Node__data', data)
-        super(Node, instance).__setattr__('__Node__tmp_backing', tmp_backing)
+        super(Node, instance).__setattr__('_Node__version_string', version_string)
+        super(Node, instance).__setattr__('_Node__data', data)
+        super(Node, instance).__setattr__('_Node__tmp_backing', tmp_backing)
         
         return instance
 
     @classmethod
     def _wrap(cls, obj):
         wrapped_instance = cls.__new__(cls,
-            __Node__version_string=(_operation_version.get(),),
-            __Node__tmp_backing=obj)
+            _Node__version_string=(_operation_version.get(),),
+            _Node__tmp_backing=obj)
         _operation_finalisers.get().append(wrapped_instance._operation_finalise)
         return wrapped_instance
 
     def _operation_finalise(self):
-        tmp_backing = super().__getattribute__('__Node__tmp_backing')
+        tmp_backing = super().__getattribute__('_Node__tmp_backing')
         assert tmp_backing is not None
-        super().__setattr__('__Node__tmp_backing', None)
+        super().__setattr__('_Node__tmp_backing', None)
         
         for k, v in tmp_backing.__dict__.items():
             setattr(self, k, v)
@@ -272,10 +273,10 @@ class Node:
         return value
 
     def __getattribute__(self, name):
-        data = super().__getattribute__('__Node__data')
-        version_string = super().__getattribute__('__Node__version_string')
+        data = super().__getattribute__('_Node__data')
+        version_string = super().__getattribute__('_Node__version_string')
 
-        tmp_backing = super().__getattribute__('__Node__tmp_backing')
+        tmp_backing = super().__getattribute__('_Node__tmp_backing')
         if tmp_backing is not None:
             if hasattr(tmp_backing, name):
                 return getattr(tmp_backing, name)
@@ -291,16 +292,16 @@ class Node:
             return super().__getattribute__(name)
 
     def __repr__(self):
-        data = super().__getattribute__('__Node__data')
-        version_string = super().__getattribute__('__Node__version_string')
+        data = super().__getattribute__('_Node__data')
+        version_string = super().__getattribute__('_Node__version_string')
         values = { key : getattr(self, key) for key in data.keys() }
         return f'Node(version={version_string},values={values})'
 
     def __setattr__(self, name, value):
-        data = super().__getattribute__('__Node__data')
-        version_string = super().__getattribute__('__Node__version_string')
+        data = super().__getattribute__('_Node__data')
+        version_string = super().__getattribute__('_Node__version_string')
 
-        tmp_backing = super().__getattribute__('__Node__tmp_backing')
+        tmp_backing = super().__getattribute__('_Node__tmp_backing')
         if tmp_backing is not None:
             return setattr(tmp_backing, name, value)
 
@@ -314,6 +315,7 @@ class Node:
 
 @register_wrapper(tuple)
 class TupleNode(Node):
+    __slots__ = ()
 
     def __init__(self, src=()):
         version_string = _get_version_string(self)
@@ -429,9 +431,10 @@ class TupleNode(Node):
 
 @register_wrapper(list)
 class ListNode(Node):
+    __slots__ = ()
 
     class _Record(Node):
-        #__slots__ = ('nxt', 'jmp', 'len', 'val')
+        __slots__ = ()
         def __init__(self, nxt, jmp, length, val):
             self.nxt = nxt
             self.jmp = jmp
@@ -509,9 +512,14 @@ class ListNode(Node):
     def __getitem__(self, index):
         if isinstance(index, slice):
             raise Exception('TODO')
+
+        err_index = index
+        if index < 0:
+            index += len(self)
+
         p = self._find_prefix(index)
         if p is None:
-            raise IndexError(index)
+            raise IndexError(err_index)
         return p.val
 
     def __setitem__(self, index, value):
@@ -520,16 +528,30 @@ class ListNode(Node):
 
         if isinstance(index, slice):
             raise Exception('TODO')
+
+        err_index = index
+        if index < 0:
+            index += len(self)
+
         p = self._find_prefix(index)
         if p is None:
-            raise IndexError(index)
+            raise IndexError(err_index)
         p.val = value
 
     def __delitem__(self, index):
         b = _get_tmp_backing(self)
         if b is not None: del b[index]; return
-        
-        raise Exception('TODO')
+
+        if isinstance(index, slice):
+            raise Exception('TODO')
+
+        err_index = index
+        if index < 0:
+            index += len(self)
+        try:
+            self.pop(index)
+        except IndexError as e:
+            raise IndexError(err_index) from e
 
     def __iter__(self):
         b = _get_tmp_backing(self)
