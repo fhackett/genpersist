@@ -91,3 +91,24 @@ def test__reference_nested_mutate_operation(c, d):
     assert d.b.b.a == 5
     assert d.b.b.b is None
 
+def test__reassignment():
+    with operation():
+        c = C()
+        c.a = 1
+        cc = c
+        c = C()
+        c.a = 2
+        c.x = cc
+        cc = c
+        c = C()
+        c.a = 3
+        c.x = cc
+
+        assert c.a == 3
+        assert c.x.a == 2
+        assert c.x.x.a == 1
+
+    assert c.a == 3
+    assert c.x.a == 2
+    assert c.x.x.a == 1
+

@@ -1,3 +1,4 @@
+import pytest
 from genpersist import Node, operation
 
 class C(Node): pass
@@ -51,4 +52,32 @@ def test__self_referential():
 
     # it's a cycle, did we crash?
     assert c.d.x[0] == 1 and c.d.x[1].x[0] == 1
+
+def test__tuple_of_tuples():
+    with operation():
+        c = C()
+        c.x = (1, (2, (3, (4, ()))))
+    
+    assert c.x == (1, (2, (3, (4, ()))))
+
+
+@pytest.mark.xfail
+def test__tuple_of_tuples_wrapped():
+    with operation():
+        c = C()
+        c.x = ()
+        print(c.x)
+        c.x = (4, c.x)
+        print(c.x)
+        c.x = (3, c.x)
+        print(c.x)
+        c.x = (2, c.x)
+        print(c.x)
+        c.x = (1, c.x)
+        print(c.x)
+        
+        assert c.x == (1, (2, (3, (4, ()))))
+
+    assert c.x == (1, (2, (3, (4, ()))))
+
 

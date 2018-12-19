@@ -77,6 +77,9 @@ def _get_data(node):
 def _get_tmp_backing(node):
     return super(Node, node).__getattribute__('__Node__tmp_backing')
 
+def _remove_tmp_backing(node):
+    super(Node, node).__setattr__('__Node__tmp_backing', None)
+
 def _new_node(node, *, version_string):
     cls = super(Node, node).__getattribute__('__class__')
     return cls.__new__(cls,
@@ -230,7 +233,6 @@ class Node:
 
     @classmethod
     def _wrap(cls, obj):
-        assert issubclass(cls, type(obj))
         wrapped_instance = cls.__new__(cls,
             __Node__version_string=(_operation_version.get(),),
             __Node__tmp_backing=obj)
@@ -268,7 +270,7 @@ class Node:
         if name in data:
             prefix, value = data[name].longest_prefix_item(version_string)
             if prefix is None:
-                raise super().__getattribute__(name)
+                return super().__getattribute__(name)
             return self._adapt_reference_version(value)
         else:
             return super().__getattribute__(name)
@@ -320,7 +322,7 @@ class TupleNode(Node):
         return len(self._tuple.value)
 
     def __repr__(self):
-        return f'({", ".join(repr(e) for e in self)})'
+        return f'$({", ".join(repr(e) for e in self)})'
 
     def __hash__(self):
         return hash(tuple(self))
@@ -408,4 +410,112 @@ class TupleNode(Node):
             if self[p] == x:
                 return p
         raise ValueError(x)
+
+
+@register_wrapper(list)
+class ListNode(Node):
+
+    class _Record(Node):
+        #__slots__ = ('nxt', 'jmp', 'len', 'val')
+        def __init__(self, nxt, jmp, length, val):
+            self.nxt = nxt
+            self.jmp = jmp
+            self.len = length
+            self.val = val
+
+    def __init__(self, iterable=(), s=None):
+        self._root = s
+        self.extend(iterable)
+
+    def _operation_finalise(self):
+        backing = _get_tmp_backing(self)
+        assert backing is not None
+        _remove_tmp_backing(self)
+        self._root = None
+        self.extend(backing)
+    
+    def __eq__(self, other):
+        if isinstance(other, (ListNode, list)):
+            return len(self) == len(other) and all(a == b for a, b in zip(self, other))
+        else:
+            return False
+
+    def append(self, val):
+        if self._root is None:
+            self._root = ListNode._Record(None, None, 1, val)
+        else:
+            s = self._root
+            
+            t = s.jmp
+            
+            if t is None:
+                t_len = 0
+            else:
+                t_len = t.len
+            
+            if t is None or t.jmp is None:
+                t_jmp_len = 0
+            else:
+                t_tmp_len = t.jmp.len
+            
+            if s.len - t_len == t_len - t_jmp_len:
+                t = t.jmp
+            else:
+                t = s
+            
+            self._root = ListNode._Record(s, t, s.len+1, val)
+
+    def extend(self, iterable):
+        for e in iterable:
+            self.append(e)
+
+    def __len__(self):
+        if self._root is None:
+            return 0
+        else:
+            return self._root.len
+
+    def _find_prefix(self, pos):
+        if pos < 0 or pos >= len(self):
+            return None
+
+        s = self._root
+        while s.len-1 > pos:
+            if s.jmp is None or s.jmp.len-1 < pos:
+                s = s.nxt
+            else:
+                s = s.jmp
+        return s
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            raise Exception('TODO')
+        p = self._find_prefix(index)
+        if p is None:
+            raise IndexError(index)
+        return p.val
+
+    def __iter__(self):
+        return self._iter_from(0)
+
+    def _iter_from(self, start):
+        if self._root is None: return
+        # hold a stack of unvisited nodes
+        # (this may, but might not for small lists, omit skipped nodes)
+        stack = [self._root]
+        while len(stack) != 0:
+            s = stack.pop()
+            # this is basically a search operation unrolled to store each node
+            # it checks as it iterates
+            while s.len-1 > start:
+                if s.jmp is None or s.jmp.len-1 < start:
+                    if s.nxt is None: break
+                    if s.len-1 > start: stack.append(s)
+                    s = s.nxt
+                else:
+                    stack.append(s)
+                    s = s.jmp
+
+            yield s.val
+            start += 1
 
