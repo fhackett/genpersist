@@ -455,6 +455,7 @@ class ListNode(Node):
             self.jmp = jmp
             self.len = length
             self.val = val
+            self.back = None
 
     def __init__(self, iterable=(), s=None):
         self._root = s
@@ -474,29 +475,7 @@ class ListNode(Node):
             return False
 
     def append(self, val):
-        if self._root is None:
-            self._root = ListNode._Record(None, None, 1, val)
-        else:
-            s = self._root
-            
-            t = s.jmp
-            
-            if t is None:
-                t_len = 0
-            else:
-                t_len = t.len
-            
-            if t is None or t.jmp is None:
-                t_jmp_len = 0
-            else:
-                t_jmp_len = t.jmp.len
-            
-            if s.len - t_len == t_len - t_jmp_len:
-                t = t.jmp
-            else:
-                t = s
-            
-            self._root = ListNode._Record(s, t, s.len+1, val)
+        self.insert(len(self), val)
 
     def extend(self, iterable):
         for e in iterable:
@@ -578,13 +557,27 @@ class ListNode(Node):
             raise IndexError(i)
 
         # keep all elements up to i unmodified
-        p = self._find_prefix(i-1)
-        # rebuild the list past that point, using a separate object so __iter__ doesn't get
-        # confused
-        minion = ListNode(s=p)
-        minion.append(x)
-        minion.extend(self._iter_from(i))
-        self._root = minion._root
+        p = self._find_prefix(i)
+        if p is None: # i == len(self)
+            before = self._root
+        else:
+            before = p.nxt
+
+        if before is None:
+            new_len = 1
+        else:
+            new_len = before.len+1
+        new = ListNode._Record(before, None, new_len+1, x)
+        
+        if p is None:
+            self._root = new
+        else:
+            p.nxt = new
+        
+        new.back = p
+        if before is not None:
+            before.back = new
+        self._recalculate_from(new)
 
     def pop(self, i=None):
         if i is None:
@@ -593,29 +586,56 @@ class ListNode(Node):
             raise IndexError(i)
 
         p = self._find_prefix(i)
-        minion = ListNode(s=p.nxt)
-        minion.extend(self._iter_from(i+1))
-        self._root = minion._root
+        before = p.nxt
+        after = p.back
+        if before is not None:
+            before.back = after
+        if after is None:
+            self._root = before
+        else:
+            after.nxt = before
+        self._recalculate_from(after)
         return p.val
 
-    def _iter_from(self, start):
-        if self._root is None or start >= len(self): return
-        # hold a stack of unvisited nodes
-        # (this may, but might not for small lists, omit skipped nodes)
-        stack = [self._root]
-        while len(stack) != 0:
-            s = stack.pop()
-            # this is basically a search operation unrolled to store each node
-            # it checks as it iterates
-            while s.len-1 > start:
-                if s.jmp is None or s.jmp.len-1 < start:
-                    if s.nxt is None: break
-                    if s.len-1 > start: stack.append(s)
-                    s = s.nxt
-                else:
-                    stack.append(s)
-                    s = s.jmp
+    def _recalculate_from(self, p):
+        if p is None:
+            return # empty
 
-            yield s.val
-            start += 1
+        # start from the first changed node
+        root = p.nxt
+        if root is None:
+            p.nxt = None
+            p.jmp = None
+            p.len = 1
+            root = p
+
+        while root.back is not None:
+            p = root.back
+                
+            t = root.jmp
+                
+            if t is None:
+                t_len = 0
+            else:
+                t_len = t.len
+            
+            if t is None or t.jmp is None:
+                t_jmp_len = 0
+            else:
+                t_jmp_len = t.jmp.len
+            
+            if root.len - t_len == t_len - t_jmp_len:
+                t = t.jmp
+            else:
+                t = root
+            
+            p.jmp = t
+            p.len = root.len+1
+            root = root.back
+
+    def _iter_from(self, start):
+        p = self._find_prefix(start)
+        while p is not None:
+            yield p.val
+            p = p.back
 
