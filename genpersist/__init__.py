@@ -90,6 +90,7 @@ def _new_node(node, *, version_string):
 _operation_version = _contextvars.ContextVar('operation_version', default=None)
 _operation_finalisers = _contextvars.ContextVar('operation_finalisers')
 _operation_tmp_backing_cache = _contextvars.ContextVar('operation_tmp_backing_cache')
+_skipped_kwargs = _contextvars.ContextVar('skipped_kwargs', default=None)
 
 _ImpureValue = _collections.namedtuple('_ImpureValue', ['value'])
 
@@ -134,7 +135,7 @@ def operation(*nodes):
             yield new_nodes
     finally:
         if reset_token is not None:
-            # is one finaliser fails, don't corrupt the context variables permanently
+            # if one finaliser fails, don't corrupt the context variables permanently
             # (all subsequent invocations of the context manager will think they
             # are reentrant calls and will skip finalisers)
             try:
@@ -158,6 +159,11 @@ def register_wrapper(tp):
         return cls
     return register
 
+def _clean_kwargs(kwargs):
+    return {k : v
+            for k, v in kwargs.items()
+            if k not in ('__Node__version_string', '__Node__data', '__Node__tmp_backing')}
+
 def _wrap(obj, assignee_version_string):
     current_version = _operation_version.get()
     if current_version is None:
@@ -168,7 +174,6 @@ def _wrap(obj, assignee_version_string):
 
     if isinstance(obj, Node):
         obj_version_string = _get_version_string(obj)
-        print(obj, obj_version_string, assignee_version_string)
         # special case: if the assigned node's version is entirely a prefix of the assignee's
         # version string, accessing the attribute later will cause the latest version to
         # be retrieved, not the one assigned. That would break intentional past references,
@@ -191,7 +196,14 @@ def _wrap(obj, assignee_version_string):
         return obj
 
     if tp not in _tp_cache:
-        wrap_tp = type(tp.__name__ + 'Node', (tp, Node), {'__slots__': []})
+        def fake_new(cls, *args, **kwargs):
+            reset = _skipped_kwargs.set(kwargs)
+            try:
+                i = super(wrap_tp, cls).__new__(cls, *args, **_clean_kwargs(kwargs))
+            finally:
+                _skipped_kwargs.reset(reset)
+            return i
+        wrap_tp = type(tp.__name__ + 'Node', (tp, Node), {'__slots__': (), '__new__': fake_new})
         _tp_cache[tp] = wrap_tp
     else:
         wrap_tp = _tp_cache[tp]
@@ -214,6 +226,10 @@ class Node:
     def __new__(cls, *args, **kwargs):
         instance = super().__new__(cls)
 
+        skw = _skipped_kwargs.get()
+        if skw is not None:
+            kwargs = skw
+
         if '__Node__version_string' in kwargs:
             version_string = kwargs['__Node__version_string']
         else:
@@ -223,7 +239,6 @@ class Node:
             version_string = (v,)
         data = kwargs.get('__Node__data', {})
         tmp_backing = kwargs.get('__Node__tmp_backing', None)
-        mutable = kwargs.get('__Node__mutable', False)
 
         super(Node, instance).__setattr__('__Node__version_string', version_string)
         super(Node, instance).__setattr__('__Node__data', data)
@@ -456,7 +471,7 @@ class ListNode(Node):
             if t is None or t.jmp is None:
                 t_jmp_len = 0
             else:
-                t_tmp_len = t.jmp.len
+                t_jmp_len = t.jmp.len
             
             if s.len - t_len == t_len - t_jmp_len:
                 t = t.jmp
@@ -470,6 +485,10 @@ class ListNode(Node):
             self.append(e)
 
     def __len__(self):
+        b = _get_tmp_backing(self)
+        if b is not None:
+            return len(b)
+
         if self._root is None:
             return 0
         else:
@@ -495,11 +514,55 @@ class ListNode(Node):
             raise IndexError(index)
         return p.val
 
+    def __setitem__(self, index, value):
+        b = _get_tmp_backing(self)
+        if b is not None: b[index] = value; return
+
+        if isinstance(index, slice):
+            raise Exception('TODO')
+        p = self._find_prefix(index)
+        if p is None:
+            raise IndexError(index)
+        p.val = value
+
+    def __delitem__(self, index):
+        b = _get_tmp_backing(self)
+        if b is not None: del b[index]; return
+        
+        raise Exception('TODO')
+
     def __iter__(self):
+        b = _get_tmp_backing(self)
+        if b is not None: return iter(b)
         return self._iter_from(0)
 
+    def insert(self, i, x):
+        if i < 0 or i > len(self):
+            raise IndexError(i)
+
+        # keep all elements up to i unmodified
+        p = self._find_prefix(i-1)
+        # rebuild the list past that point, using a separate object so __iter__ doesn't get
+        # confused
+        minion = ListNode(s=p)
+        minion.append(x)
+        minion.extend(self._iter_from(i))
+        self._root = minion._root
+
+    def pop(self, i=None):
+        if i is None:
+            i = len(self)-1
+        if i < 0 or i >= len(self):
+            raise IndexError(i)
+
+        p = self._find_prefix(i)
+        minion = ListNode(s=p.nxt)
+        minion.extend(self._iter_from(i+1))
+        self._root = minion._root
+        return p.val
+
     def _iter_from(self, start):
-        if self._root is None: return
+        if self._root is None or start >= len(self): return
         # hold a stack of unvisited nodes
         # (this may, but might not for small lists, omit skipped nodes)
         stack = [self._root]
