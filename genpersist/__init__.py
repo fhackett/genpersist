@@ -4,6 +4,9 @@ import contextlib as _contextlib
 import inspect as _inspect
 import contextvars as _contextvars
 
+_Sentinel = object()
+_ValueSentinel = object()
+
 class Trie:
     __slots__ = ('_children',)
     def __init__(self):
@@ -19,48 +22,60 @@ class Trie:
         items = { k : v for k, v in self.items()}
         return f'Trie({items})'
 
-    def items(self):
-        for k, v in self._children.items():
-            if len(k) == 0:
-                yield k, v
+    def _items(self, pfx, children):
+        for k, v in children.items():
+            if k is _ValueSentinel:
+                yield pfx+k, v
             else:
-                for kk, vv in v.items():
-                    yield k+kk, vv
+                yield from self._items(pfx+(k,), v)
+
+    def items(self):
+        yield from self._items((), self._children)
 
     def __setitem__(self, name, value):
-        empty = name[:0]
-        head = name[:1]
-        tail = name[1:]
-        if head == empty:
-            self._children[empty] = value
-        elif head in self._children:
-            self._children[head][tail] = value
-        else:
-            t = Trie()
-            self._children[head] = t
-            t[tail] = value
+        i = 0
+        children = self._children
+        while i < len(name):
+            c2 = children.get(name[i], _Sentinel)
+            if c2 is _Sentinel:
+                c2 = {}
+                children[name[i]] = c2
+            children = c2
+            i += 1
+        children[_ValueSentinel] = value
 
     def longest_prefix_item(self, name):
-        empty = name[:0]
-        head = name[:1]
-        tail = name[1:]
-        
-        if empty in self._children:
-            empty_pair = empty, self._children[empty]
-        else:
-            empty_pair = None, None
-
-        if head == empty:
-            return empty_pair
-        elif head in self._children:
-            t = self._children[head]
-            postfix, value = t.longest_prefix_item(tail)
-            if postfix is None:
-                return empty_pair
+        pfx = []
+        i = 0
+        last_valid_i = None
+        last_valid_v = None
+        children = self._children
+        while i < len(name):
+            v = children.get(name[i], _Sentinel)
+            if v is _Sentinel:
+                vv = children.get(_ValueSentinel, _Sentinel)
+                if vv is _Sentinel:
+                    if last_valid_i is None:
+                        return None, None
+                    return name[:last_valid_i], last_valid_v
+                else:
+                    return name[:i], vv
             else:
-                return head + postfix, value
+                vv = children.get(_ValueSentinel, _Sentinel)
+                if vv is not _Sentinel:
+                    last_valid_i = i
+                    last_valid_v = vv
+                children = v
+            i += 1
+
+        vv = children.get(_ValueSentinel, _Sentinel)
+        if vv is _Sentinel:
+            if last_valid_i is None:
+                return None, None
+            else:
+                return name[:last_valid_i], last_valid_v
         else:
-            return empty_pair
+            return name, vv
 
 __version = 0
 def _make_fresh_version():
