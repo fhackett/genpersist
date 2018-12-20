@@ -1,5 +1,5 @@
-
-from genpersist import ListNode, operation
+import pytest
+from genpersist import ListNode, CopyList, operation
 
 def lens(n):
     p = n._root
@@ -33,10 +33,14 @@ def test__append_iterate():
     assert list(n._iter_from(3)) == [4,5]
     assert list(n._iter_from(5)) == []
 
-def test__getitem():
+@pytest.fixture(params=[ListNode, CopyList])
+def LN(request):
+    return request.param
+
+def test__getitem(LN):
 
     with operation():
-        n = ListNode([1])
+        n = LN([1])
         assert list(n[i] for i in range(len(n))) == [1]
         n.append(2)
         assert list(n[i] for i in range(len(n))) == [1,2]
@@ -49,9 +53,9 @@ def test__getitem():
 
     assert list(n[i] for i in range(len(n))) == [1,2,3,4,5]
 
-def test__pop():
+def test__pop(LN):
     with operation():
-        n = ListNode([1,2,3,4,5])
+        n = LN([1,2,3,4,5])
 
         assert n.pop() == 5
 
@@ -61,5 +65,13 @@ def test__pop():
 
         assert list(n) == [1,2,4]
 
+    assert list(n) == [1,2,4]
+
+    with operation(n) as nn:
+        nn.pop(1)
+        assert list(nn) == [1,4]
+        assert list(n) == [1,2,4]
+
+    assert list(nn) == [1,4]
     assert list(n) == [1,2,4]
 

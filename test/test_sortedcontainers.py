@@ -29,11 +29,14 @@ def test__sorted_list_discard():
 
     with operation():
         w = WrappedSortedList([5,1,2,3,4])
+        assert list(w) == [1,2,3,4,5]
 
     assert list(w) == [1,2,3,4,5]
 
     with operation(w) as ww:
         ww.discard(2)
+        assert list(ww) == [1,3,4,5]
+        assert list(w) == [1,2,3,4,5]
 
     assert list(w) == [1,2,3,4,5]
     assert list(ww) == [1,3,4,5]

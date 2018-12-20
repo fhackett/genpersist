@@ -3,6 +3,7 @@ import functools as _functools
 import contextlib as _contextlib
 import inspect as _inspect
 import contextvars as _contextvars
+import itertools as _itertools
 
 _Sentinel = object()
 _ValueSentinel = object()
@@ -443,6 +444,98 @@ class TupleNode(Node):
                 return p
         raise ValueError(x)
 
+class CopyList(Node):
+    __slots__ = ()
+
+    def __init__(self, iterable=()):
+        version_string = _get_version_string(self)
+        self._version = version_string
+        self._impl = _ImpureValue(list(_wrap(v, version_string) for v in iterable))
+
+    def _operation_finalise(self):
+        backing = _get_tmp_backing(self)
+        assert backing is not None
+        _remove_tmp_backing(self)
+        version_string = _get_version_string(self)
+        self._version = version_string
+        self._impl = _ImpureValue(list(_wrap(v, version_string) for v in backing))
+
+    def _maybe_copy(fn):
+        @_functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            b = _get_tmp_backing(self)
+            if b is not None:
+                return fn(self, *args, **kwargs)
+            old = self._impl.value
+            if self._version != _get_version_string(self):
+                self._impl = _ImpureValue(self._impl.value[:])
+                self._version = _get_version_string(self)
+            r = fn(self, *args, **kwargs)
+            return r
+        return wrapper
+
+    @_maybe_copy
+    def append(self, v):
+        version_string = _get_version_string(self)
+        self._impl.value.append(_wrap(v, version_string))
+
+    @_maybe_copy
+    def extend(self, iterable):
+        b = _get_tmp_backing(self)
+        if b is None: b = self._impl.value
+        
+        version_string = _get_version_string(self)
+        b.extend(_wrap(v, version_string) for v in iterable)
+    
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return list(self._adapt_reference_version(v) for v in self._impl.value[index])
+        else:
+            return self._adapt_reference_version(self._impl.value[index])
+
+    @_maybe_copy
+    def __setitem__(self, index, value):
+        version_string = _get_version_string(self)
+        if isinstance(index, slice):
+            self._impl.value[index] = (_wrap(v, version_string) for v in value)
+        else:
+            self._impl.value[index] = _wrap(value, version_string)
+
+    @_maybe_copy
+    def insert(self, index, value):
+        self[index:index] = (value,)
+
+    @_maybe_copy
+    def __delitem__(self, index):
+        b = _get_tmp_backing(self)
+        if b is None: b = self._impl.value
+        del b[index]
+
+    @_maybe_copy
+    def pop(self, index=-1):
+        c = self[index]
+        del self[index]
+        return c
+
+    def __len__(self):
+        b = _get_tmp_backing(self)
+        if b is not None:
+            return len(b)
+        return len(self._impl.value)
+
+    def __iter__(self):
+        b = _get_tmp_backing(self)
+        if b is None:
+            b = self._impl.value
+
+        for i in b:
+            yield self._adapt_reference_version(i)
+
+    def __eq__(self, other):
+        if isinstance(other, (CopyList, list)):
+            return len(self) == len(other) and all(a == b for a, b in zip(self, other))
+        else:
+            return False
 
 @register_wrapper(list)
 class ListNode(Node):
@@ -638,4 +731,56 @@ class ListNode(Node):
         while p is not None:
             yield p.val
             p = p.back
+
+# CHUNK_SIZE = 64
+# 
+# class ChunkList(Node):
+#     __slots__ = ()
+#     def __init__(self, iterable=()):
+#         self._bins = ListNode()
+#         self._sizes = ListNode()
+# 
+#     def _find_bin(self, pos):
+#         return _bisect.bisect_left(self._sizes, pos)
+#     
+#     def __len__(self):
+#         if len(self._sizes) == 0:
+#             return 0
+#         else:
+#             return self._sizes[-1]
+# 
+#     def append(self, e):
+#         if len(self._bins) == 0:
+#             self._bins.append(CopyList([e]))
+#             self._sizes.append(1)
+#         else:
+#             last_bin = self._bins[-1]
+#             if len(last_bin) == CHUNK_SIZE:
+#                 new_last_bin = CopyList(last_bin[CHUNK_SIZE//2:])
+#                 del last_bin[:CHUNK_SIZE//2]
+#                 new_last_bin.append(e)
+#                 self._sizes[-1] -= CHUNK_SIZE//2
+#                 self._sizes.append(CHUNK_SIZE//2 + 1)
+#             else:
+#                 last_bin.append(e)
+#                 self._sizes[-1] += 1
+# 
+#     def _del_range(self, start, stop):
+#         i = self._find_bin(start)
+#         s_start = self._sizes[i]
+#         if stop-s_start < len(self._bins[start-s_start]):
+#             s_stop = stop - s_start
+#         else:
+#             s_stop = -1
+#         del self._bins[start-s_start:s_stop]
+# 
+#     def _insert_seq(self, pos, seq):
+# 
+# 
+#     def __setitem__(self, index, value):
+#         if isinstance(index, slice):
+#             start = index.start or 0
+#             stop = len(self) if index.stop is None else index.stop
+#             if index.step is not None:
+#                 raise Exception('TODO')
 

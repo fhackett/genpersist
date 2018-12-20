@@ -21,19 +21,20 @@ def sortedlist_range(request):
 def sortedlist_addremove_vanilla(element_count):
     l = SortedList(random.sample(range(element_count), element_count))
     def fn():
-        y = random.randrange(element_count)
+        y, z = random.randrange(element_count), random.randrange(element_count)
         l.add(y)
-        l.discard(y)
+        l.discard(z)
     yield fn
 
 def sortedlist_addremove_many_ops(element_count):
     with operation():
         l = WrappedSortedList(random.sample(range(element_count), element_count))
     def fn():
-        with operation(l) as ll:
-            y = random.randrange(element_count)
-            ll.add(y)
-            ll.discard(y)
+        nonlocal l
+        with operation(l) as l:
+            y, z = random.randrange(element_count), random.randrange(element_count)
+            l.add(y)
+            l.discard(z)
     yield fn
 
 def sortedlist_addremove_one_op(element_count):
@@ -42,9 +43,9 @@ def sortedlist_addremove_one_op(element_count):
     
     with operation(l) as ll:
         def fn():
-                y = random.randrange(element_count)
-                ll.add(y)
-                ll.discard(y)
+            y = random.randrange(element_count)
+            ll.add(y)
+            ll.discard(y)
         yield fn
 
 @pytest.fixture(params=[
