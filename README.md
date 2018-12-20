@@ -1,8 +1,8 @@
 # genpersist
 
-WARNING: work in progress, needs more testing and features
+WARNING: work in progress. Fairly functional, but you may sometimes run into stubs.
 
-For now, you can run the tests with py.test.
+You can run the tests with py.test.
 
 To make instances of a class persistent, have that class inherit from `genpersist.Node`.
 The class will look and act exactly as it would have before, except you are not allowed
@@ -48,17 +48,62 @@ with operation():
     c1.x = None
 
 with operation(c1) as c2:
-    c2.x = snapshot(c1)
+    c2.x = c1
 
 assert c2.x.x is None
 ```
 
-OK, so not quite as obvious as just `c2.x = c1`, but making that work would break some of the
-underlying assumptions of the library. The best we can do is `snapshot`, which basically means
-"give me a new version of c1 that is exactly the same as c1 in every way". Due to the way we
-handle versions, this makes it so `snapshot(c1)` is `c1` from an alternate future, not the past
-... and that means we shouldn't see the newer version (which happens to be `c2`) when we access
-`c2.x`.
+It Just Works(tm) - any reference to a past node can be assigned, such that you will get that
+version when you access the field. If you actually wanted to create a reference cycle, use the
+value that came from `operation`.
+
+Now, let's try something a little adventurous: lists
+
+```
+with operation():
+    c1 = C()
+    l = [1]
+    c1.x = l
+    l.extend((2,3,4,5))
+
+assert l == [1,2,3,4,5]
+assert c1.x == [1,2,3,4,5]
+
+l.clear()
+
+assert l == []
+assert c1.x == [1,2,3,4,5]
+```
+
+As a special case (TODO: same for dict and set), plain `list` objects are converted to a special
+list-like type when you assign them to a persistent object. Notice however that if you then
+mutate the list within the same operation the results will be reflected in the persistent version.
+When the operation is done however, your list is frozen. Changing `l` again does nothing.
+
+You can actually do the same to any "plain old Python" class as well (notice how D does not
+inherit from Node):
+
+```
+class D: pass
+
+with operation():
+    c1 = C()
+    d = D()
+    d.a = 1
+    c1.x = D()
+    d.b = 2
+
+d.c = 3
+
+assert c1.x.a == 1
+assert c1.x.b == 2
+assert not hasattr(c1.x, 'c')
+```
+
+In this case the conversion is automatic. If you want this kind of thing to work for something
+unusual, say, a builtin genpersist hasn't covered or some custom thing written in C then
+you'll have to write your own wrapper. There is a system, but the underbelly may not be
+pretty. TODO: make prettier, provide docs on how to use
 
 More features/polish/docs to come.
 
